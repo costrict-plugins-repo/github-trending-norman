@@ -1,0 +1,59 @@
+---
+name: categorize-transactions
+description: Review and categorize uncategorized bank transactions, match them with invoices, and verify bookkeeping entries. Use when the user wants to review transactions, categorize expenses, do bookkeeping, or reconcile their bank account.
+version: 1.3.0
+metadata:
+  openclaw:
+    emoji: "\U0001F3F7"
+    homepage: https://norman.finance
+    requires:
+      mcp:
+        - norman-finance
+---
+
+Help the user categorize and organize their bank transactions.
+
+## First: determine account type and country
+
+Call `get_company_details` and check `isSme`, `country` and `usesCompanyChart`:
+- **Freelance** (`isSme: false`, `usesCompanyChart: false`): Use `categorize_transaction` — AI detects the freelance category automatically.
+- **JDG** (`isSme: false`, `country: PL`, `usesCompanyChart: true`): a Polish sole trader books on its own PL_KPIR chart, never on the freelance categories. Its tax book is the KPiR, or on the ryczałt the revenue register; the account decides the KPiR column. Use `list_company_categories` and assign the account with `update_transaction` (`company_category_id`).
+- **GmbH / UG** (`isSme: true`, `country: DE`): Use `list_company_categories` to find DATEV categories by code. If the right category isn't provisioned, use `search_skr_by_code` or `suggest_skr_category` to search the full SKR catalog, then `create_company_category` to add it.
+- **Sp. z o.o.** (`isSme: true`, `country: PL`): full books on the PL_FULL chart of accounts (Zakładowy Plan Kont), not a KPiR. Use `list_company_categories` with `chart_template: "PL_FULL"` and assign the account with `update_transaction`. The SKR tools are German and not available for it; if no PL_FULL account fits, ask the user which account to use.
+
+## Transfers between own accounts
+
+With automatic categorization on, a bank import books a German company's payment to or from another of its connected accounts by IBAN: on `Internal transfer` for a freelancer or trader, on `Transfers between own accounts` for a GmbH or UG. These rows carry no VAT and do not change profit. Leave them there unless the user says the payment is something else.
+
+## Shareholder loans and other liability accounts
+
+A GmbH or UG can switch a liability account on for transactions in its chart of accounts (Kontenrahmen). Book a transaction on a liability account only when the user names it; never pick one yourself, even for a recurring transfer from a shareholder. A rule the user creates may book to it. A shareholder loan goes on `Payables to shareholders` (Verbindlichkeiten gegenüber GmbH-Gesellschaftern), SKR04 3640 or SKR03 1665. For the remaining term, the user can add and switch on SKR04 3641, 3642 or 3643 (SKR03 1666, 1667 or 1668): up to 1 year, 1 to 5 years, over 5 years. If the user books their loans on `Shareholder loans` (Gesellschafterdarlehen, SKR04 2020 or SKR03 890), follow that choice. A liability booking carries no VAT and does not change profit or the VAT return; the loan shows on the balance sheet under liabilities to shareholders. Repayments go on the same account.
+
+## Workflow
+
+1. **Fetch uncategorized transactions**: Call `search_transactions` to find transactions that need attention. Look for bookings still to review (`status=UNVERIFIED`) or without a category.
+
+2. **Smart categorization**: For each transaction, suggest a category based on:
+   - The transaction description / reference text
+   - The counterparty name
+   - The amount and pattern (recurring = likely subscription)
+   - Similar past transactions
+
+3. **Assign the category**:
+   - **Freelance**: Use `categorize_transaction` with the transaction details — it returns the AI-suggested freelance category.
+   - **SME, or a JDG on its PL_KPIR chart**: Use `update_transaction` with `company_category_id` to assign the account. For a GmbH/UG, if the needed category isn't in `list_company_categories`, search the full SKR03/SKR04 catalog with `search_skr_by_code` (by number) or `suggest_skr_category` (by description, uses AI). Then `create_company_category` to add it.
+
+4. **Same counterparty**: When the user corrects the category of one booking, call `find_same_counterparty_transactions` with that booking before you save its new category. Offer to change the `suggested` bookings too, and say how many reviewed ones stay as they are. Change the ones the user agrees to with `update_transaction`. If the new category asks for details (trip dates, VAT period, business share, asset lifetime), change only the one booking.
+
+5. **Invoice matching**: When a transaction looks like an incoming payment:
+   - Call `list_invoices` to find matching unpaid invoices (by amount or client)
+   - Use `link_transaction` to connect the payment to the invoice
+
+6. **Document attachment**: Remind the user to attach receipts for expenses:
+   - An uploaded receipt or invoice books itself as an unpaid booking. Never create a second transaction for it. Use `find_booking_payments` to find its payment, and `record_booking_payment` if it was paid another way.
+   - Use `upload_bulk_attachments` for multiple receipts
+   - Use `link_attachment_transaction` to connect receipts to transactions
+
+7. **Review**: When the user asks, use `change_transaction_verification` to mark the categorized bookings reviewed (Geprüft).
+
+Present transactions in batches of 10-15 for manageable review. Show: Date, Amount, Description, Suggested Category.

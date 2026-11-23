@@ -1,0 +1,71 @@
+---
+name: tax-report
+description: "Review and manage tax reports. German companies: VAT (UStVA, ZM, Umsatzsteuer), income tax prepayments and Finanzamt submissions via ELSTER. Polish companies: the JPK_V7 and VAT-UE, PIT or CIT advances, ZUS DRA, the annual PIT and the CIT-8, which Norman prepares and the owner files in the Norman app or outside it. Use when the user asks about taxes, Steuern, podatki, VAT, USt, JPK, Finanzamt, urząd skarbowy, or tax filing."
+version: 1.3.0
+disable-model-invocation: true
+argument-hint: "[period or tax type]"
+metadata:
+  openclaw:
+    emoji: "\U0001F3E6"
+    homepage: https://norman.finance
+    requires:
+      mcp:
+        - norman-finance
+---
+
+Help the user with their tax obligations. Read the company's country first (`company://current` or `get_company_details`) and use its own terms: a German company has a UStVA and the Finanzamt, a Polish company the JPK_V7 and the urząd skarbowy, never the other one's.
+
+1. **Overview**: Call `list_tax_reports` to see all tax reports and their statuses (draft, validated, submitted)
+
+2. **Next deadline**: Call `get_vat_next_report` for the next VAT return: the UStVA of a German company (a Kleinunternehmer or a company with VAT-exempt sales under § 4 UStG files one only for a month or quarter with reverse-charge purchases), the JPK_V7 of a Polish VAT payer (a Polish company exempt from VAT files none). A Polish company's PIT or CIT advance and ZUS DRA, due on the 20th, are in `list_tax_reports`.
+
+3. **Specific report**: If the user asks about a specific period, call `get_tax_report` with the report ID to see details including:
+   - Reporting period
+   - Revenue and VAT amounts
+   - Status (draft, ready, submitted)
+   - Submission status (the Finanzamt for a German report; the Ministry of Finance and its UPO for a Polish JPK_V7)
+
+4. **Why this number** (Polish companies; a German company has no explanation, read its report with `get_tax_report`): When the user asks why a report shows its amount or where a figure comes from, call `explain_tax_report` with the report ID and answer from it, never from memory:
+   - Lead with the answer in two or three sentences, then the formula with the report's own figures as a short list.
+   - Name the source rows behind the base (document numbers, dates, counterparties, amounts), split by rate where rates differ, and the deductions and carry-overs: contributions paid and the part deducted, earlier advances deducted, the excess carried from the previous return, losses, rounding.
+   - A Polish PIT or CIT advance is year-to-date: compare this period's step with the previous one to say what changed. A Polish ZUS DRA: the scheme, the social base and the health base and tier.
+   - Say what is missing or blocking and what the owner can change and where. Quote only figures the tool returned; if it cannot work the report out, explain why instead of giving a number.
+   - The tool's `total` is the report's amount now, the one its page shows. If the user or a list names another amount, the books changed since: explain the tool's total and never talk about stored, saved or recalculated totals.
+
+5. **German companies, preview and submit**:
+   - Call `generate_finanzamt_preview` to show the user exactly what will be sent to the Finanzamt. Let them review all figures.
+   - If the preview names `tax_number`, `tax_state`, `steuernummer` or `bundesland`, quote its message and ask for the number from the Finanzamt's letter (slashes and the 13-digit ELSTER form are fine) or for the right federal state. The field names where the return reads it. Save `tax_number` and `tax_state` with `update_company_details` (`tax_id` is the Steuernummer, `tax_state` the state). `steuernummer` and `bundesland` are the number and state saved in the income tax return: no tool changes them, so the user corrects them in Norman, in the return's personal details. Then preview again.
+   - If it names `tax_liability_entry_date`, that is ELSTER's KSt 1 F check: the date unlimited tax liability began must equal the first day of the annual close's fiscal year. Quote its message and never pick a date: no tool changes either value, so the user corrects the date in the KSt wizard's first step or the close period in the Jahresabschluss, then previews again.
+   - Only when the user explicitly confirms, call `submit_tax_report` to file with the Finanzamt via ELSTER. If it answers `Email not confirmed`, call `resend_email_confirmation` and ask the user to open the link in that email; a paid plan confirms the address without it. Any other refusal carries the API's `code` and `message`; quote the message. `subscription_required`: the message names the plan that files from Norman. A German Kleinunternehmer on Pro files with Klein, a yearly plan: the switch under Account → Subscription replaces the Pro subscription, and the filing opens once the switch is paid. `yearly_billing_required`: the plan is billed monthly, and annual returns need yearly billing. `tax_year_not_covered`: the paid year covers another tax year; the user adds this tax year in Norman.
+
+6. **German partnerships (GbR, eGbR, PartG)**: when the company details say `isPartnership` true, the partnership files the UStVA, the annual VAT return, the ZM, the EÜR under its own name, the Gewerbesteuer only when `partnershipIncome` is `gewerbebetrieb`, and the Feststellungserklärung (`PARTNERSHIP_ASSESSMENT`), never an income tax return of its own: never offer one.
+   - The Feststellungserklärung splits the year's EÜR profit over the partners: the Vorabvergütungen first, the rest by each partner's share. `list_partnership_partners` lists the partners, who are separate people; each declares their part in their own income tax return, outside this company.
+   - Read the report with `get_tax_report`. If its lineItems has `blockedBy`, quote each detail: `tax_number` and `tax_state` are the partnership's own Steuernummer and Finanzamt state (save them with `update_company_details`), `address` its street, postal code and city, `partners` a key that does not hold (`get_partnership_profit_key` says on which day). The partners and their shares are changed in Norman under Kontoeinstellungen -> Gesellschafter.
+   - The answers (activity, each partner's Vorab and Sonderbetrieb balance, real estate, the § 35 figures of a trading partnership) are entered on the report's page in Norman (Steuern -> Feststellungserklärung). Ask the user to check them there, then preview and submit as in step 5.
+   - Norman files it from 2025 on, for a year whose partners stay the same all year.
+
+7. **Polish companies, check and then file in the app**:
+   - Read a JPK_V7's sales, purchases, totals and exclusions with `get_polish_jpk_register`, and its filing state (methods, MF status, UPO) with `get_polish_jpk_filing_status`; a PIT return's with `get_polish_pit_filing_status`. `get_polish_tax_estimates` gives PIT/ZUS or CIT estimates, which are not filed returns.
+   - There is no Polish signing or submission tool here. Norman files the JPK_V7 (the monthly JPK_V7M, or each monthly file of a quarterly JPK_V7K) from the Norman app only after the owner approves and signs it, on the JDG Pro and Sp. z o.o. Max plans. Norman prepares the PIT returns, the CIT-8 draft and the VAT-UE and calculates ZUS; the user or their accountant files them.
+   - Give facts and next steps, never an individual tax opinion.
+
+8. **Tax settings**: Call `list_tax_settings` to review VAT registration, filing frequency, and other tax configuration. A German Kleinunternehmer or a company with VAT-exempt sales under § 4 UStG files a UStVA only for a period with VAT it owes as recipient (§ 13b, § 1a UStG), quarterly by default. To file monthly, call `update_tax_setting` with `reporting_frequency` "monthly". A German Kleinunternehmer files no ZM (§ 18a Abs. 4 UStG), also for EU B2B sales. Filed ZMs stay in the reports. For a German Kleinunternehmer, call `get_kleinunternehmer_limit` to say where this year's revenue stands against 100,000 € (25,000 € in the founding year) and next year's 25,000 €; at `near_limit`, `crossed` or `not_eligible`, tell the user the invoice that crosses the limit already needs VAT and suggest updating the VAT status in the tax settings. Never change the VAT status for them.
+
+9. **Several businesses of one person (German Freiberufler and Gewerbetreibende)**: one person is one VAT entrepreneur for all their businesses (§ 2 Abs. 1 Satz 2 UStG). When the user runs several businesses or a VAT return seems missing, call `get_vat_entrepreneur`. If `enabled` is false, say nothing about filing them together.
+   - `selectedCompany` role `member`: from `joinedOn` the main business (`filedBy`) files this business's UStVA and ZM, from 1 January of that year its annual VAT return, and the person's income tax return. Never prepare, preview or submit one of those for the member: `switch_company` to the main business. Returns the member filed before stay as filed.
+   - The main business files one UStVA, ZM and annual VAT return for all of them under its Steuernummer. Each line's `byCompany` shows what each business put in (`netAmount`, `taxAmount`): quote these figures, never recompute them. Each business keeps its own books and its own EÜR.
+   - One income tax return a year for the person, from the main business: `businesses` has a row per business for Anlage G (`gewerbe`) or S (`freelance`) with its own profit (`amount`), Steuernummer and, for a Gewerbe, the § 35 EStG figures (`tradeTax`). In a joint assessment the spouse's businesses are typed in on Person B's side of the income tab (`personBBusinesses`). Spouses never file VAT together.
+   - The Kleinunternehmer limits count the turnover of all the businesses, and all of them have the same VAT status.
+   - `warnings` `same_trade_same_municipality`: two Gewerbe of the same trade in one town are usually one Gewerbebetrieb for the trade tax, with one return and one allowance. Suggest the user checks with their Finanzamt; never decide it.
+   - Grouping, adding a business and filing separately again (only before anything was filed together) happen in Norman only, never with a tool: Account (Konto) -> the company name -> Group overview (Gruppenübersicht), section "VAT for all your businesses" ("Umsatzsteuer für alle deine Unternehmen"). A GmbH, UG or partnership files its own VAT.
+   - `submit_tax_report` answering 409 `vat_return_filed_elsewhere`: the UStVA or annual VAT return of this Steuernummer and period was already filed from `companyName` (for a member, the main business). This one is refused and cannot replace it; there is no override. Tell the user which company filed it and never submit it again.
+   - `submit_tax_report` answering 409 `income_tax_filed_elsewhere`: the income tax return of the year and person was already filed from `companyName`. Quote the message. Only when the user then explicitly confirms that this one should replace it, call `submit_tax_report` again with `replace_filed_return` true: that files it too, and the Finanzamt takes it as a replacement.
+
+Important warnings:
+- German companies: ALWAYS show the Finanzamt preview before submitting
+- Tax submissions are IRREVERSIBLE - make sure the user explicitly confirms
+- Remind the user of filing deadlines:
+  - DE: monthly: 10th of following month, quarterly: 10th of following quarter month
+  - PL: JPK_V7M or JPK_V7K and VAT-UE: 25th of the following month; PIT and CIT advances and ZUS DRA: 20th of the following month; each moved to the next working day
+- Reminders: for a German company Norman emails a reminder a week before and on the morning of each UStVA and ZM due date. For a Polish company Norman reminds of the JPK_V7, VAT-UE, PIT and CIT advances, ZUS DRA, annual PIT and CIT-8 a few days ahead and on the day, in the app, by push and by e-mail. To turn the reminders off or on again, set `notify_tax_deadlines` with `update_company_details`.
+- If a German tax number (Steuernummer) needs validation, use `validate_tax_number` (Germany only)
